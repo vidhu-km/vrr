@@ -24,7 +24,7 @@ EXCEL_FILE = "vrr_data.xlsx"
 SHP_FILE = "ooipsectiongrid.shp"
 BAKKEN_SHP_FILE = "Bakken Units.shp"
 
-ZOOM_START = 10
+ZOOM_START = 11
 
 MAX_VRR = 3.0
 VRR_MIN = 0.0
