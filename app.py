@@ -176,10 +176,9 @@ def build_folium_map(
             name="Bakken Units",
             style_function=lambda _: {
                 "fillColor": "transparent",
-                "color": "#e6550d",
-                "weight": 2.0,
+                "color": "#000000",
+                "weight": 3.0,
                 "fillOpacity": 0.0,
-                "dashArray": "5 3",
             },
         )
         bakken_layer.add_to(m)
