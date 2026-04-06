@@ -167,19 +167,19 @@ def build_folium_map(
     vrr_colormap.caption = "VRR (green gradient)"
 
     def style_fn(feature):
-      v = feature["properties"].get("vrr", 0.0) or 0.0
-      if v == 0:
-          fill_color = "transparent"  # No color for zero VRR
-          fill_opacity = 0.0
-      else:
-          fill_color = vrr_colormap(v)
-          fill_opacity = 0.65
-      return {
-          "fillColor": fill_color,
-          "color": "rgba(0,0,0,0.25)",
-          "weight": 0.7,
-          "fillOpacity": fill_opacity,
-      }
+        v = feature["properties"].get("vrr", 0.0) or 0.0
+        if v == 0:
+            fill_color = "transparent"  # No color for zero VRR
+            fill_opacity = 0.0
+        else:
+            fill_color = vrr_colormap(v)
+            fill_opacity = 0.65
+        return {
+            "fillColor": fill_color,
+            "color": "rgba(0,0,0,0.25)",
+            "weight": 0.7,
+            "fillOpacity": fill_opacity,
+        }
 
     vrr_layer = folium.GeoJson(
         data=geojson_str,
