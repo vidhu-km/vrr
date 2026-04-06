@@ -14,8 +14,8 @@ import geopandas as gpd
 # ------------------------
 # Streamlit Setup
 # ------------------------
-st.set_page_config(page_title="VRR Shapefile Map (Navigable)", layout="wide")
-st.title("VRR Shapefile Map (Navigable)")
+st.set_page_config(page_title="Bakken VRR Map", layout="wide")
+st.title("Bakken VRR Map")
 
 # ------------------------
 # Configuration
