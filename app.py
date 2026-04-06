@@ -108,10 +108,10 @@ def compute_vrr_by_section(df_xlsx: pd.DataFrame) -> pd.DataFrame:
         )
     )
 
-    oil = agg["section_prod_oil"].to_numpy()
-    gas = agg["section_prod_gas"].to_numpy()
-    water = agg["section_prod_water"].to_numpy()
-    inj = agg["section_inj_water"].to_numpy()
+    oil = agg["section_prod_oil"].to_numpy(dtype=float)
+    gas = agg["section_prod_gas"].to_numpy(dtype=float)
+    water = agg["section_prod_water"].to_numpy(dtype=float)
+    inj = agg["section_inj_water"].to_numpy(dtype=float)
 
     gor = np.where(oil > 0, gas / oil, 0.0)
     gas_term = np.maximum(0, oil * 0.01033 * (gor - 120))
@@ -125,7 +125,7 @@ def compute_vrr_by_section(df_xlsx: pd.DataFrame) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False)
-def make_joined_geojson(excel_path: str, shp_path: str) -> tuple[str, list[float]]:
+def make_joined_geojson(excel_path: str, shp_path: str) -> tuple:
     df_xlsx = load_xlsx(excel_path)
     gdf = load_shp(shp_path)
 
@@ -154,11 +154,16 @@ def load_bakken_geojson(path: str) -> str:
     return gdf.to_json()
 
 
-@st.cache_resource(show_spinner=False)
+# -------------------------------------------------------
+# Build map — NOT cached (folium Maps are mutable objects
+# with closures that break Streamlit's cache).
+# The *data* feeding it is already cached above, so this
+# is cheap: it only serialises the already-prepared JSON.
+# -------------------------------------------------------
 def build_folium_map(
     geojson_str: str,
-    center: list[float],
-    bakken_geojson_str: str | None,
+    center: list,
+    bakken_geojson_str=None,
 ) -> folium.Map:
     m = folium.Map(location=center, zoom_start=ZOOM_START, tiles=TILE_LAYER)
 
@@ -181,13 +186,14 @@ def build_folium_map(
     vrr_colormap = cm.LinearColormap(GREEN_STOPS, vmin=VRR_MIN, vmax=MAX_VRR)
     vrr_colormap.caption = "VRR (green gradient)"
 
-    def style_fn(feature):
-        v = feature["properties"].get("vrr", 0.0) or 0.0
-        if v == 0:
+    def style_fn(feature, _cmap=vrr_colormap):
+        v = feature["properties"].get("vrr", 0.0)
+        if v is None or v == 0:
             fill_color = "transparent"
             fill_opacity = 0.0
         else:
-            fill_color = vrr_colormap(v)
+            v = float(v)
+            fill_color = _cmap(v)
             fill_opacity = 0.65
         return {
             "fillColor": fill_color,
