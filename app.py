@@ -36,7 +36,6 @@ GREEN_STOPS = [
 
 TILE_LAYER = "CartoDB positron"
 
-
 # ------------------------
 # Validate input
 # ------------------------
@@ -48,7 +47,6 @@ if not os.path.exists(SHP_FILE):
     st.error(f"Missing shapefile: `{SHP_FILE}`. Place it in the app folder.")
     st.stop()
 
-
 # ------------------------
 # Cache: load Excel + shapefile
 # ------------------------
@@ -57,34 +55,25 @@ def load_xlsx(path: str) -> pd.DataFrame:
     df = pd.read_excel(path)
 
     required_cols = [
-        "performance_oil_cumtodate",
-        "performance_gas_cumtodate",
-        "performance_water_cumtodate",
-        "performance_waterinj_cumtodate",
-        "header_sectionname",
-        "header_resourceplay",
-        "header_midpointlatitude",
-        "header_midpointlongitude",
+        "Section",
+        "section prod oil",
+        "section prod gas",
+        "section prod water",
+        "section inj water",
     ]
     missing = [c for c in required_cols if c not in df.columns]
     if missing:
         raise ValueError(f"Missing required columns in XLSX: {missing}")
 
     num_cols = [
-        "performance_oil_cumtodate",
-        "performance_gas_cumtodate",
-        "performance_water_cumtodate",
-        "performance_waterinj_cumtodate",
+        "section prod oil",
+        "section prod gas",
+        "section prod water",
+        "section inj water",
     ]
-    df[num_cols] = (
-        df[num_cols]
-        .apply(pd.to_numeric, errors="coerce")
-        .fillna(0.0)
-    )
-
-    df["header_sectionname"] = df["header_sectionname"].astype(str).str.strip()
+    df[num_cols] = df[num_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    df["Section"] = df["Section"].astype(str).str.strip()
     return df
-
 
 @st.cache_data(show_spinner=False)
 def load_shp(path: str) -> gpd.GeoDataFrame:
@@ -101,26 +90,27 @@ def load_shp(path: str) -> gpd.GeoDataFrame:
 
     return gdf
 
-
 @st.cache_data(show_spinner=False)
 def compute_vrr_by_section(df_xlsx: pd.DataFrame) -> pd.DataFrame:
     agg = (
-        df_xlsx.groupby("header_sectionname", as_index=False)
+        df_xlsx.groupby("Section", as_index=False)
         .agg(
-            performance_oil_cumtodate=("performance_oil_cumtodate", "sum"),
-            performance_gas_cumtodate=("performance_gas_cumtodate", "sum"),
-            performance_water_cumtodate=("performance_water_cumtodate", "sum"),
-            performance_waterinj_cumtodate=("performance_waterinj_cumtodate", "sum"),
+            section_prod_oil=("section prod oil", "sum"),
+            section_prod_gas=("section prod gas", "sum"),
+            section_prod_water=("section prod water", "sum"),
+            section_inj_water=("section inj water", "sum"),
         )
     )
 
-    oil = agg["performance_oil_cumtodate"].to_numpy()
-    gas = agg["performance_gas_cumtodate"].to_numpy()
-    water = agg["performance_water_cumtodate"].to_numpy()
-    inj = agg["performance_waterinj_cumtodate"].to_numpy()
+    oil = agg["section_prod_oil"].to_numpy()
+    gas = agg["section_prod_gas"].to_numpy()
+    water = agg["section_prod_water"].to_numpy()
+    inj = agg["section_inj_water"].to_numpy()
 
+    # Compute GOR safely
     gor = np.where(oil > 0, gas / oil, 0.0)
 
+    # Gas term in denominator
     gas_term = np.maximum(0, oil * 0.01033 * (gor - 120))
     denom = oil * 1.36 + water * 1.01 + gas_term
 
@@ -130,12 +120,8 @@ def compute_vrr_by_section(df_xlsx: pd.DataFrame) -> pd.DataFrame:
     vrr_disp = np.clip(vrr, VRR_MIN, MAX_VRR)
     agg["vrr"] = vrr_disp
 
-    return agg[["header_sectionname", "vrr"]]
+    return agg[["Section", "vrr"]]
 
-
-# ------------------------
-# Cache: join + produce GeoJSON (expensive)
-# ------------------------
 @st.cache_data(show_spinner=False)
 def make_joined_geojson(excel_path: str, shp_path: str) -> tuple[str, list[float]]:
     df_xlsx = load_xlsx(excel_path)
@@ -144,25 +130,19 @@ def make_joined_geojson(excel_path: str, shp_path: str) -> tuple[str, list[float
 
     gdf2 = gdf.merge(
         vrr_df,
-        left_on="Section",
-        right_on="header_sectionname",
+        on="Section",
         how="left"
     )
     gdf2["vrr"] = gdf2["vrr"].fillna(0.0)
 
-    # center for map
+    # Center for map
     cent = [
         float(gdf2.geometry.centroid.y.mean()),
         float(gdf2.geometry.centroid.x.mean()),
     ]
 
-    # IMPORTANT: cache GeoJSON string so clicks don't re-serialize
     return gdf2.to_json(), cent
 
-
-# ------------------------
-# Cache: build the entire Folium map (also expensive)
-# ------------------------
 @st.cache_resource(show_spinner=False)
 def build_folium_map(geojson_str: str, center: list[float]) -> folium.Map:
     m = folium.Map(location=center, zoom_start=ZOOM_START, tiles=TILE_LAYER)
@@ -199,9 +179,8 @@ def build_folium_map(geojson_str: str, center: list[float]) -> folium.Map:
     vrr_colormap.add_to(m)
     return m
 
-
 # ------------------------
-# Run: everything uses cache
+# Run
 # ------------------------
 geojson_str, center = make_joined_geojson(EXCEL_FILE, SHP_FILE)
 m = build_folium_map(geojson_str, center)
