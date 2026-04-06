@@ -249,20 +249,12 @@ vrr_df = compute_vrr_by_section(df_xlsx)
 st.dataframe(vrr_df.style.format({"vrr": "{:.3f}"}), use_container_width=True)
 
 # ------------------------
-# Download button
+# Download original VRR Excel file
 # ------------------------
-from io import BytesIO
-
-# Save the VRR DataFrame to an in-memory Excel file
-output = BytesIO()
-with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-    vrr_df.to_excel(writer, index=False, sheet_name="VRR")
-    writer.save()
-output.seek(0)
-
-st.download_button(
-    label="Download VRR Excel File",
-    data=output,
-    file_name="vrr_results.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-)
+with open(EXCEL_FILE, "rb") as f:
+    st.download_button(
+        label="Download Source VRR Excel File",
+        data=f,
+        file_name=EXCEL_FILE,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
