@@ -162,7 +162,41 @@ def build_folium_map(
 ) -> folium.Map:
     m = folium.Map(location=center, zoom_start=ZOOM_START, tiles=TILE_LAYER)
 
-# ---- Bakken Units layer ----
+    # ---- VRR layer ----
+    vrr_colormap = cm.LinearColormap(GREEN_STOPS, vmin=VRR_MIN, vmax=MAX_VRR)
+    vrr_colormap.caption = "VRR (green gradient)"
+
+    def style_fn(feature):
+        v = feature["properties"].get("vrr", 0.0) or 0.0
+        if v == 0:
+            fill_color = "transparent"  # No color for zero VRR
+            fill_opacity = 0.0
+        else:
+            fill_color = vrr_colormap(v)
+            fill_opacity = 0.65
+        return {
+            "fillColor": fill_color,
+            "color": "rgba(0,0,0,0.25)",
+            "weight": 0.7,
+            "fillOpacity": fill_opacity,
+        }
+
+    vrr_layer = folium.GeoJson(
+        data=geojson_str,
+        name="VRR Sections",
+        style_function=style_fn,
+        tooltip=folium.GeoJsonTooltip(
+            fields=["Section", "vrr"],
+            aliases=["Section", "VRR"],
+            localize=True,
+            sticky=False,
+            labels=True,
+        ),
+    )
+    vrr_layer.add_to(m)
+    vrr_colormap.add_to(m)
+
+    # ---- Bakken Units layer ----
     if bakken_geojson_str is not None:
         bakken_layer = folium.GeoJson(
             data=bakken_geojson_str,
@@ -232,40 +266,6 @@ def build_folium_map(
             ),
         )
         bakken_layer.add_to(m)
-
-    # ---- VRR layer ----
-    vrr_colormap = cm.LinearColormap(GREEN_STOPS, vmin=VRR_MIN, vmax=MAX_VRR)
-    vrr_colormap.caption = "VRR (green gradient)"
-
-    def style_fn(feature):
-        v = feature["properties"].get("vrr", 0.0) or 0.0
-        if v == 0:
-            fill_color = "transparent"  # No color for zero VRR
-            fill_opacity = 0.0
-        else:
-            fill_color = vrr_colormap(v)
-            fill_opacity = 0.65
-        return {
-            "fillColor": fill_color,
-            "color": "rgba(0,0,0,0.25)",
-            "weight": 0.7,
-            "fillOpacity": fill_opacity,
-        }
-
-    vrr_layer = folium.GeoJson(
-        data=geojson_str,
-        name="VRR Sections",
-        style_function=style_fn,
-        tooltip=folium.GeoJsonTooltip(
-            fields=["Section", "vrr"],
-            aliases=["Section", "VRR"],
-            localize=True,
-            sticky=False,
-            labels=True,
-        ),
-    )
-    vrr_layer.add_to(m)
-    vrr_colormap.add_to(m)
 
     # Layer toggle control (top-right)
     LayerControl(collapsed=False).add_to(m)
