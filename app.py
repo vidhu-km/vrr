@@ -234,7 +234,6 @@ if BAKKEN_AVAILABLE:
 
 m = build_folium_map(geojson_str, center, bakken_geojson_str)
 
-st.subheader("VRR Map (Shapefile polygons, smooth green colormap)")
 st_folium(m, use_container_width=True, height=650, returned_objects=[])
 
 # ------------------------
