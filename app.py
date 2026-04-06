@@ -8,7 +8,6 @@ from streamlit_folium import st_folium
 import branca.colormap as cm
 
 import geopandas as gpd
-import streamlit.components.v1 as components  # (kept if you still need it)
 
 # ------------------------
 # Streamlit Setup
@@ -27,18 +26,16 @@ ZOOM_START = 7
 MAX_VRR = 3.0
 VRR_MIN = 0.0
 
-# Use a green-only gradient (smooth).
-# We'll build a custom LinearColormap from Branca with green shades.
-# You can tweak these stops if you want lighter/darker extremes.
 GREEN_STOPS = [
-    "#eaffea",  # near 0
+    "#eaffea",
     "#b7f7b7",
     "#4fe24f",
-    "#0dbf0d",  # higher
-    "#006800",  # max
+    "#0dbf0d",
+    "#006800",
 ]
 
 TILE_LAYER = "CartoDB positron"
+
 
 # ------------------------
 # Validate input
@@ -51,8 +48,9 @@ if not os.path.exists(SHP_FILE):
     st.error(f"Missing shapefile: `{SHP_FILE}`. Place it in the app folder.")
     st.stop()
 
+
 # ------------------------
-# Caching: load Excel + shapefile
+# Cache: load Excel + shapefile
 # ------------------------
 @st.cache_data(show_spinner=False)
 def load_xlsx(path: str) -> pd.DataFrame:
@@ -72,7 +70,6 @@ def load_xlsx(path: str) -> pd.DataFrame:
     if missing:
         raise ValueError(f"Missing required columns in XLSX: {missing}")
 
-    # numeric conversions
     num_cols = [
         "performance_oil_cumtodate",
         "performance_gas_cumtodate",
@@ -85,7 +82,6 @@ def load_xlsx(path: str) -> pd.DataFrame:
         .fillna(0.0)
     )
 
-    # clean section name
     df["header_sectionname"] = df["header_sectionname"].astype(str).str.strip()
     return df
 
@@ -95,12 +91,11 @@ def load_shp(path: str) -> gpd.GeoDataFrame:
     gdf = gpd.read_file(path)
     if "Section" not in gdf.columns:
         raise ValueError("Shapefile missing required attribute `Section`.")
-    # normalize for join
+
     gdf["Section"] = gdf["Section"].astype(str).str.strip()
 
-    # ensure CRS exists; if missing, assume WGS84 (leaflet expects lat/lon)
     if gdf.crs is None:
-        gdf.set_crs(epsg=4326, inplace=True)
+        gdf = gdf.set_crs(epsg=4326)
     else:
         gdf = gdf.to_crs(epsg=4326)
 
@@ -109,9 +104,6 @@ def load_shp(path: str) -> gpd.GeoDataFrame:
 
 @st.cache_data(show_spinner=False)
 def compute_vrr_by_section(df_xlsx: pd.DataFrame) -> pd.DataFrame:
-    # If XLSX contains multiple rows per header_sectionname,
-    # we aggregate to ensure one VRR per section.
-    # Adjust aggregation logic if your data is strictly 1 row per section.
     agg = (
         df_xlsx.groupby("header_sectionname", as_index=False)
         .agg(
@@ -136,75 +128,83 @@ def compute_vrr_by_section(df_xlsx: pd.DataFrame) -> pd.DataFrame:
     vrr = np.nan_to_num(vrr, nan=0.0, posinf=0.0, neginf=0.0)
 
     vrr_disp = np.clip(vrr, VRR_MIN, MAX_VRR)
-
     agg["vrr"] = vrr_disp
+
     return agg[["header_sectionname", "vrr"]]
 
 
-df_xlsx = load_xlsx(EXCEL_FILE)
-gdf = load_shp(SHP_FILE)
-vrr_df = compute_vrr_by_section(df_xlsx)
+# ------------------------
+# Cache: join + produce GeoJSON (expensive)
+# ------------------------
+@st.cache_data(show_spinner=False)
+def make_joined_geojson(excel_path: str, shp_path: str) -> tuple[str, list[float]]:
+    df_xlsx = load_xlsx(excel_path)
+    gdf = load_shp(shp_path)
+    vrr_df = compute_vrr_by_section(df_xlsx)
 
-# ------------------------
-# Join VRR to shapefile polygons
-# ------------------------
-gdf2 = gdf.merge(
-    vrr_df,
-    left_on="Section",
-    right_on="header_sectionname",
-    how="left"
-)
-
-# If some sections don't match, set VRR to 0 (or choose NaN and handle separately)
-gdf2["vrr"] = gdf2["vrr"].fillna(0.0)
-
-# ------------------------
-# Create folium map
-# ------------------------
-center = [gdf2.geometry.centroid.y.mean(), gdf2.geometry.centroid.x.mean()]
-m = folium.Map(location=center, zoom_start=ZOOM_START, tiles=TILE_LAYER)
-
-# ------------------------
-# Branca smooth green gradient colormap
-# ------------------------
-vrr_colormap = cm.LinearColormap(
-    GREEN_STOPS,
-    vmin=VRR_MIN,
-    vmax=MAX_VRR
-)
-vrr_colormap.caption = "VRR (green gradient)"
-
-def style_fn(feature):
-    v = feature["properties"].get("vrr", 0.0)
-    if v is None or np.isnan(v):
-        v = 0.0
-    color = vrr_colormap(v)
-    return {
-        "fillColor": color,
-        "color": "rgba(0,0,0,0.25)",
-        "weight": 0.7,
-        "fillOpacity": 0.65,
-    }
-
-# ------------------------
-# Add GeoJSON polygons colored by VRR
-# ------------------------
-geojson = folium.GeoJson(
-    data=gdf2.to_json(),
-    style_function=style_fn,
-    tooltip=folium.GeoJsonTooltip(
-        fields=["Section", "vrr"],
-        aliases=["Section", "VRR"],
-        localize=True,
-        sticky=False,
-        labels=True,
-        fmt={ "vrr": "{:.3f}" }
+    gdf2 = gdf.merge(
+        vrr_df,
+        left_on="Section",
+        right_on="header_sectionname",
+        how="left"
     )
-)
-geojson.add_to(m)
+    gdf2["vrr"] = gdf2["vrr"].fillna(0.0)
 
-# Add legend
-vrr_colormap.add_to(m)
+    # center for map
+    cent = [
+        float(gdf2.geometry.centroid.y.mean()),
+        float(gdf2.geometry.centroid.x.mean()),
+    ]
+
+    # IMPORTANT: cache GeoJSON string so clicks don't re-serialize
+    return gdf2.to_json(), cent
+
+
+# ------------------------
+# Cache: build the entire Folium map (also expensive)
+# ------------------------
+@st.cache_resource(show_spinner=False)
+def build_folium_map(geojson_str: str, center: list[float]) -> folium.Map:
+    m = folium.Map(location=center, zoom_start=ZOOM_START, tiles=TILE_LAYER)
+
+    vrr_colormap = cm.LinearColormap(GREEN_STOPS, vmin=VRR_MIN, vmax=MAX_VRR)
+    vrr_colormap.caption = "VRR (green gradient)"
+
+    def style_fn(feature):
+        v = feature["properties"].get("vrr", 0.0)
+        if v is None or np.isnan(v):
+            v = 0.0
+        color = vrr_colormap(v)
+        return {
+            "fillColor": color,
+            "color": "rgba(0,0,0,0.25)",
+            "weight": 0.7,
+            "fillOpacity": 0.65,
+        }
+
+    geojson = folium.GeoJson(
+        data=geojson_str,
+        style_function=style_fn,
+        tooltip=folium.GeoJsonTooltip(
+            fields=["Section", "vrr"],
+            aliases=["Section", "VRR"],
+            localize=True,
+            sticky=False,
+            labels=True,
+            fmt={"vrr": "{:.3f}"},
+        ),
+    )
+    geojson.add_to(m)
+
+    vrr_colormap.add_to(m)
+    return m
+
+
+# ------------------------
+# Run: everything uses cache
+# ------------------------
+geojson_str, center = make_joined_geojson(EXCEL_FILE, SHP_FILE)
+m = build_folium_map(geojson_str, center)
 
 st.subheader("VRR Map (Shapefile polygons, smooth green colormap)")
 st_folium(m, use_container_width=True, height=650)
