@@ -82,6 +82,7 @@ def load_xlsx(path: str) -> pd.DataFrame:
         "section inj water",
     ]
     df[num_cols] = df[num_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    df[num_cols] = df[num_cols] * 1000
     df["Section"] = df["Section"].astype(str).str.strip()
     return df
 
