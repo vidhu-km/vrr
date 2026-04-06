@@ -53,7 +53,6 @@ if not os.path.exists(SHP_FILE):
 @st.cache_data(show_spinner=False)
 def load_xlsx(path: str) -> pd.DataFrame:
     df = pd.read_excel(path)
-
     required_cols = [
         "Section",
         "section prod oil",
@@ -75,7 +74,7 @@ def load_xlsx(path: str) -> pd.DataFrame:
     df["Section"] = df["Section"].astype(str).str.strip()
     return df
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, allow_output_mutation=True)
 def load_shp(path: str) -> gpd.GeoDataFrame:
     gdf = gpd.read_file(path)
     if "Section" not in gdf.columns:
@@ -107,19 +106,14 @@ def compute_vrr_by_section(df_xlsx: pd.DataFrame) -> pd.DataFrame:
     water = agg["section_prod_water"].to_numpy()
     inj = agg["section_inj_water"].to_numpy()
 
-    # Compute GOR safely
     gor = np.where(oil > 0, gas / oil, 0.0)
-
-    # Gas term in denominator
     gas_term = np.maximum(0, oil * 0.01033 * (gor - 120))
     denom = oil * 1.36 + water * 1.01 + gas_term
 
-    vrr = np.where(denom > 0, (inj * 1.01) / denom, np.nan)
+    vrr = np.where(denom > 0, (inj * 1.01) / denom, 0.0)
     vrr = np.nan_to_num(vrr, nan=0.0, posinf=0.0, neginf=0.0)
-
     vrr_disp = np.clip(vrr, VRR_MIN, MAX_VRR)
-    agg["vrr"] = vrr_disp
-
+    agg["vrr"] = vrr_disp.round(3)  # round for tooltip display
     return agg[["Section", "vrr"]]
 
 @st.cache_data(show_spinner=False)
@@ -128,22 +122,17 @@ def make_joined_geojson(excel_path: str, shp_path: str) -> tuple[str, list[float
     gdf = load_shp(shp_path)
     vrr_df = compute_vrr_by_section(df_xlsx)
 
-    gdf2 = gdf.merge(
-        vrr_df,
-        on="Section",
-        how="left"
-    )
+    gdf2 = gdf.merge(vrr_df, on="Section", how="left")
     gdf2["vrr"] = gdf2["vrr"].fillna(0.0)
 
-    # Center for map
-    cent = [
-        float(gdf2.geometry.centroid.y.mean()),
-        float(gdf2.geometry.centroid.x.mean()),
-    ]
+    # Compute centroid safely using projected CRS
+    gdf_proj = gdf2.to_crs(epsg=3857)
+    centroid = gdf_proj.geometry.centroid
+    center = [float(centroid.y.mean()), float(centroid.x.mean())]
 
-    return gdf2.to_json(), cent
+    return gdf2.to_json(), center
 
-@st.cache_resource(show_spinner=False)
+@st.cache_resource(show_spinner=False, allow_output_mutation=True)
 def build_folium_map(geojson_str: str, center: list[float]) -> folium.Map:
     m = folium.Map(location=center, zoom_start=ZOOM_START, tiles=TILE_LAYER)
 
@@ -151,9 +140,7 @@ def build_folium_map(geojson_str: str, center: list[float]) -> folium.Map:
     vrr_colormap.caption = "VRR (green gradient)"
 
     def style_fn(feature):
-        v = feature["properties"].get("vrr", 0.0)
-        if v is None or np.isnan(v):
-            v = 0.0
+        v = feature["properties"].get("vrr", 0.0) or 0.0
         color = vrr_colormap(v)
         return {
             "fillColor": color,
@@ -170,12 +157,10 @@ def build_folium_map(geojson_str: str, center: list[float]) -> folium.Map:
             aliases=["Section", "VRR"],
             localize=True,
             sticky=False,
-            labels=True,
-            fmt={"vrr": "{:.3f}"},
+            labels=True
         ),
     )
     geojson.add_to(m)
-
     vrr_colormap.add_to(m)
     return m
 
