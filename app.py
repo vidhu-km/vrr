@@ -236,3 +236,34 @@ m = build_folium_map(geojson_str, center, bakken_geojson_str)
 
 st.subheader("VRR Map (Shapefile polygons, smooth green colormap)")
 st_folium(m, use_container_width=True, height=650, returned_objects=[])
+
+# ------------------------
+# Display VRR table
+# ------------------------
+st.subheader("VRR by Section")
+
+# Load the processed VRR data
+df_xlsx = load_xlsx(EXCEL_FILE)
+vrr_df = compute_vrr_by_section(df_xlsx)
+
+# Display table in Streamlit
+st.dataframe(vrr_df.style.format({"vrr": "{:.3f}"}), use_container_width=True)
+
+# ------------------------
+# Download button
+# ------------------------
+from io import BytesIO
+
+# Save the VRR DataFrame to an in-memory Excel file
+output = BytesIO()
+with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+    vrr_df.to_excel(writer, index=False, sheet_name="VRR")
+    writer.save()
+output.seek(0)
+
+st.download_button(
+    label="Download VRR Excel File",
+    data=output,
+    file_name="vrr_results.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
