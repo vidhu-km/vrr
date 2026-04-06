@@ -162,6 +162,21 @@ def build_folium_map(
 ) -> folium.Map:
     m = folium.Map(location=center, zoom_start=ZOOM_START, tiles=TILE_LAYER)
 
+    # ---- Bakken Units layer ----
+    if bakken_geojson_str is not None:
+        bakken_layer = folium.GeoJson(
+            data=bakken_geojson_str,
+            name="Bakken Units",
+            style_function=lambda _: {
+                "fillColor": "transparent",
+                "color": "#e6550d",
+                "weight": 2.0,
+                "fillOpacity": 0.0,
+                "dashArray": "5 3",
+            },
+        )
+        bakken_layer.add_to(m)
+
     # ---- VRR layer ----
     vrr_colormap = cm.LinearColormap(GREEN_STOPS, vmin=VRR_MIN, vmax=MAX_VRR)
     vrr_colormap.caption = "VRR (green gradient)"
@@ -169,7 +184,7 @@ def build_folium_map(
     def style_fn(feature):
         v = feature["properties"].get("vrr", 0.0) or 0.0
         if v == 0:
-            fill_color = "transparent"  # No color for zero VRR
+            fill_color = "transparent"
             fill_opacity = 0.0
         else:
             fill_color = vrr_colormap(v)
@@ -196,78 +211,6 @@ def build_folium_map(
     vrr_layer.add_to(m)
     vrr_colormap.add_to(m)
 
-    # ---- Bakken Units layer ----
-    if bakken_geojson_str is not None:
-        bakken_layer = folium.GeoJson(
-            data=bakken_geojson_str,
-            name="Bakken Units",
-            style_function=lambda _: {
-                "fillColor": "transparent",
-                "color": "#e6550d",
-                "weight": 2.0,
-                "fillOpacity": 0.0,
-                "dashArray": "5 3",
-            },
-            tooltip=folium.GeoJsonTooltip(
-                fields=[
-                    f
-                    for f in ["UNIT_NAME", "Name", "NAME"]
-                    # We'll just list common candidates; the tooltip
-                    # silently ignores fields that don't exist in every
-                    # feature, but we pick them up dynamically below.
-                ],
-                aliases=["Unit Name"] * 3,
-                localize=True,
-                sticky=False,
-                labels=True,
-            )
-            if False  # replaced below with dynamic detection
-            else None,
-        )
-
-        # Dynamically figure out a label field for Bakken tooltips
-        import json
-
-        bakken_data = json.loads(bakken_geojson_str)
-        bakken_props = []
-        if bakken_data.get("features"):
-            bakken_props = list(bakken_data["features"][0]["properties"].keys())
-
-        # Pick the best name-like field
-        name_field = None
-        for candidate in ["UNIT_NAME", "UnitName", "Name", "NAME", "Unit_Name"]:
-            if candidate in bakken_props:
-                name_field = candidate
-                break
-
-        tooltip_fields = [name_field] if name_field else []
-        tooltip_aliases = ["Unit Name"] if name_field else []
-
-        bakken_layer = folium.GeoJson(
-            data=bakken_geojson_str,
-            name="Bakken Units",
-            style_function=lambda _: {
-                "fillColor": "transparent",
-                "color": "#e6550d",
-                "weight": 2.0,
-                "fillOpacity": 0.0,
-                "dashArray": "5 3",
-            },
-            tooltip=(
-                folium.GeoJsonTooltip(
-                    fields=tooltip_fields,
-                    aliases=tooltip_aliases,
-                    localize=True,
-                    sticky=False,
-                    labels=True,
-                )
-                if tooltip_fields
-                else None
-            ),
-        )
-        bakken_layer.add_to(m)
-
-    # Layer toggle control (top-right)
     LayerControl(collapsed=False).add_to(m)
 
     return m
@@ -285,7 +228,4 @@ if BAKKEN_AVAILABLE:
 m = build_folium_map(geojson_str, center, bakken_geojson_str)
 
 st.subheader("VRR Map (Shapefile polygons, smooth green colormap)")
-
-# returned_objects=[] prevents st_folium from pushing every click/hover
-# back to Streamlit, which was causing a full rerun on every interaction.
 st_folium(m, use_container_width=True, height=650, returned_objects=[])
