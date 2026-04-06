@@ -1,48 +1,27 @@
 import os
-import logging
-from typing import Tuple, List
-
 import numpy as np
 import pandas as pd
 import streamlit as st
 
 import folium
+from folium import LayerControl
 from streamlit_folium import st_folium
 import branca.colormap as cm
-import geopandas as gpd
 
-# ------------------------
-# Logging (exec-ready)
-# ------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-)
-logger = logging.getLogger("vrr-map-app")
+import geopandas as gpd
 
 # ------------------------
 # Streamlit Setup
 # ------------------------
-st.set_page_config(
-    page_title="VRR Navigable Map",
-    page_icon="🗺️",
-    layout="wide",
-)
-
-st.title("🗺️ VRR Navigable Map")
-st.markdown(
-    """
-    **Purpose:** Visualize VRR by `Section` from the provided Excel workbook and overlay it on the supplied shapefile grid.
-
-    **How to use:** Hover a polygon to view `Section` and `VRR` values.
-    """
-)
+st.set_page_config(page_title="VRR Shapefile Map (Navigable)", layout="wide")
+st.title("VRR Shapefile Map (Navigable)")
 
 # ------------------------
 # Configuration
 # ------------------------
 EXCEL_FILE = "vrr_data.xlsx"
 SHP_FILE = "ooipsectiongrid.shp"
+BAKKEN_SHP_FILE = "Bakken Units.shp"
 
 ZOOM_START = 7
 
@@ -59,34 +38,25 @@ GREEN_STOPS = [
 
 TILE_LAYER = "CartoDB positron"
 
-
 # ------------------------
-# Helpers: Validation & Messages
+# Validate input files
 # ------------------------
-def validate_inputs(excel_path: str, shp_path: str) -> None:
-    missing = []
-    if not os.path.exists(excel_path):
-        missing.append(excel_path)
-    if not os.path.exists(shp_path):
-        missing.append(shp_path)
+if not os.path.exists(EXCEL_FILE):
+    st.error(f"Missing input file: `{EXCEL_FILE}`. Place it in the app folder.")
+    st.stop()
 
-    if missing:
-        st.error(
-            "Missing required file(s). Please place them in the app folder:\n\n"
-            + "\n".join([f"- `{p}`" for p in missing])
-        )
-        st.stop()
+if not os.path.exists(SHP_FILE):
+    st.error(f"Missing shapefile: `{SHP_FILE}`. Place it in the app folder.")
+    st.stop()
 
-
-def required_excel_columns() -> List[str]:
-    return [
-        "Section",
-        "section prod oil",
-        "section prod gas",
-        "section prod water",
-        "section inj water",
-    ]
-
+if not os.path.exists(BAKKEN_SHP_FILE):
+    st.warning(
+        f"Optional shapefile `{BAKKEN_SHP_FILE}` not found — "
+        "the Bakken Units layer will be skipped."
+    )
+    BAKKEN_AVAILABLE = False
+else:
+    BAKKEN_AVAILABLE = True
 
 # ------------------------
 # Cache: load Excel + shapefile
@@ -94,50 +64,38 @@ def required_excel_columns() -> List[str]:
 @st.cache_data(show_spinner=False)
 def load_xlsx(path: str) -> pd.DataFrame:
     df = pd.read_excel(path)
-
-    required_cols = required_excel_columns()
+    required_cols = [
+        "Section",
+        "section prod oil",
+        "section prod gas",
+        "section prod water",
+        "section inj water",
+    ]
     missing = [c for c in required_cols if c not in df.columns]
     if missing:
-        raise ValueError(f"XLSX missing required columns: {missing}")
+        raise ValueError(f"Missing required columns in XLSX: {missing}")
 
-    # Normalize Section
-    df["Section"] = df["Section"].astype(str).str.strip()
-
-    # Coerce numeric columns
     num_cols = [
         "section prod oil",
         "section prod gas",
         "section prod water",
         "section inj water",
     ]
-    for c in num_cols:
-        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
-
+    df[num_cols] = df[num_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    df["Section"] = df["Section"].astype(str).str.strip()
     return df
 
 
 @st.cache_data(show_spinner=False)
 def load_shp(path: str) -> gpd.GeoDataFrame:
     gdf = gpd.read_file(path)
-
-    if "Section" not in gdf.columns:
-        raise ValueError("Shapefile missing required attribute `Section`.")
-
-    gdf["Section"] = gdf["Section"].astype(str).str.strip()
-
-    # Ensure CRS is set and consistent; default to EPSG:4326 if missing
     if gdf.crs is None:
-        logger.warning("Shapefile CRS not found. Assuming EPSG:4326.")
         gdf = gdf.set_crs(epsg=4326)
     else:
         gdf = gdf.to_crs(epsg=4326)
-
     return gdf
 
 
-# ------------------------
-# VRR Calculation
-# ------------------------
 @st.cache_data(show_spinner=False)
 def compute_vrr_by_section(df_xlsx: pd.DataFrame) -> pd.DataFrame:
     agg = (
@@ -150,12 +108,11 @@ def compute_vrr_by_section(df_xlsx: pd.DataFrame) -> pd.DataFrame:
         )
     )
 
-    oil = agg["section_prod_oil"].to_numpy(dtype=float)
-    gas = agg["section_prod_gas"].to_numpy(dtype=float)
-    water = agg["section_prod_water"].to_numpy(dtype=float)
-    inj = agg["section_inj_water"].to_numpy(dtype=float)
+    oil = agg["section_prod_oil"].to_numpy()
+    gas = agg["section_prod_gas"].to_numpy()
+    water = agg["section_prod_water"].to_numpy()
+    inj = agg["section_inj_water"].to_numpy()
 
-    # Existing formulas preserved
     gor = np.where(oil > 0, gas / oil, 0.0)
     gas_term = np.maximum(0, oil * 0.01033 * (gor - 120))
     denom = oil * 1.36 + water * 1.01 + gas_term
@@ -163,54 +120,51 @@ def compute_vrr_by_section(df_xlsx: pd.DataFrame) -> pd.DataFrame:
     vrr = np.where(denom > 0, (inj * 1.01) / denom, 0.0)
     vrr = np.nan_to_num(vrr, nan=0.0, posinf=0.0, neginf=0.0)
     vrr_disp = np.clip(vrr, VRR_MIN, MAX_VRR)
-
-    agg["vrr"] = vrr_disp
+    agg["vrr"] = vrr_disp.round(3)
     return agg[["Section", "vrr"]]
 
 
-# ------------------------
-# GeoJSON Join + Map Center
-# ------------------------
 @st.cache_data(show_spinner=False)
-def make_joined_geojson(excel_path: str, shp_path: str) -> Tuple[str, List[float], int]:
+def make_joined_geojson(excel_path: str, shp_path: str) -> tuple[str, list[float]]:
     df_xlsx = load_xlsx(excel_path)
     gdf = load_shp(shp_path)
+
+    if "Section" not in gdf.columns:
+        raise ValueError("Shapefile missing required attribute `Section`.")
+    gdf["Section"] = gdf["Section"].astype(str).str.strip()
+
     vrr_df = compute_vrr_by_section(df_xlsx)
-
-    # Join (left join: keep all polygons)
     gdf2 = gdf.merge(vrr_df, on="Section", how="left")
-    gdf2["vrr"] = gdf2["vrr"].fillna(0.0).astype(float)
+    gdf2["vrr"] = gdf2["vrr"].fillna(0.0)
 
-    # Center calculation:
-    # - For geodetic CRS (EPSG:4326), centroid in degrees can be misleading.
-    # - Use Web Mercator (EPSG:3857) for a reasonable map center.
+    # Compute centroid in projected CRS, then convert back to lat/lon
     gdf_proj = gdf2.to_crs(epsg=3857)
-    centroid = gdf_proj.geometry.centroid
+    centroid_proj = gdf_proj.geometry.centroid
+    centroid_gdf = gpd.GeoDataFrame(geometry=centroid_proj, crs="EPSG:3857")
+    centroid_gdf = centroid_gdf.to_crs(epsg=4326)
+    center_lat = float(centroid_gdf.geometry.y.mean())
+    center_lon = float(centroid_gdf.geometry.x.mean())
 
-    center_lat = float(centroid.y.mean())
-    center_lon = float(centroid.x.mean())
-
-    # Convert center back to EPSG:4326 for folium
-    center_gdf = gpd.GeoSeries([gpd.points_from_xy([center_lon], [center_lat])[0]], crs=3857).to_crs(4326)
-    center_point = center_gdf.iloc[0]
-    center = [float(center_point.y), float(center_point.x)]
-
-    geojson = gdf2.to_json()
-
-    poly_count = int(len(gdf2))
-    return geojson, center, poly_count
+    return gdf2.to_json(), [center_lat, center_lon]
 
 
-# ------------------------
-# Folium Map Builder
-# ------------------------
+@st.cache_data(show_spinner=False)
+def load_bakken_geojson(path: str) -> str:
+    gdf = load_shp(path)
+    return gdf.to_json()
+
+
 @st.cache_resource(show_spinner=False)
-def build_folium_map(geojson_str: str, center: List[float], decimals: int) -> folium.Map:
+def build_folium_map(
+    geojson_str: str,
+    center: list[float],
+    bakken_geojson_str: str | None,
+) -> folium.Map:
     m = folium.Map(location=center, zoom_start=ZOOM_START, tiles=TILE_LAYER)
 
-    # Legend / color scale
+    # ---- VRR layer ----
     vrr_colormap = cm.LinearColormap(GREEN_STOPS, vmin=VRR_MIN, vmax=MAX_VRR)
-    vrr_colormap.caption = "VRR (clipped to [0.0, 3.0])"
+    vrr_colormap.caption = "VRR (green gradient)"
 
     def style_fn(feature):
         v = feature["properties"].get("vrr", 0.0) or 0.0
@@ -222,15 +176,9 @@ def build_folium_map(geojson_str: str, center: List[float], decimals: int) -> fo
             "fillOpacity": 0.65,
         }
 
-    def tooltip_html(props):
-        section = props.get("Section", "")
-        v = props.get("vrr", 0.0) or 0.0
-        v_fmt = f"{v:.{decimals}f}"
-        return f"<b>Section:</b> {section}<br/><b>VRR:</b> {v_fmt}"
-
-    # Use GeoJson with tooltip rendered client-side
-    geojson = folium.GeoJson(
+    vrr_layer = folium.GeoJson(
         data=geojson_str,
+        name="VRR Sections",
         style_function=style_fn,
         tooltip=folium.GeoJsonTooltip(
             fields=["Section", "vrr"],
@@ -238,79 +186,101 @@ def build_folium_map(geojson_str: str, center: List[float], decimals: int) -> fo
             localize=True,
             sticky=False,
             labels=True,
-            # We'll still control decimals through formatting below if needed,
-            # but folium's default formatting may vary; keeping it simple.
         ),
     )
-
-    # Add an additional tooltip formatter via layer-by-layer is complex;
-    # keep built-in tooltip and rely on computed rounding/values.
-    geojson.add_to(m)
+    vrr_layer.add_to(m)
     vrr_colormap.add_to(m)
+
+    # ---- Bakken Units layer ----
+    if bakken_geojson_str is not None:
+        bakken_layer = folium.GeoJson(
+            data=bakken_geojson_str,
+            name="Bakken Units",
+            style_function=lambda _: {
+                "fillColor": "transparent",
+                "color": "#e6550d",
+                "weight": 2.0,
+                "fillOpacity": 0.0,
+                "dashArray": "5 3",
+            },
+            tooltip=folium.GeoJsonTooltip(
+                fields=[
+                    f
+                    for f in ["UNIT_NAME", "Name", "NAME"]
+                    # We'll just list common candidates; the tooltip
+                    # silently ignores fields that don't exist in every
+                    # feature, but we pick them up dynamically below.
+                ],
+                aliases=["Unit Name"] * 3,
+                localize=True,
+                sticky=False,
+                labels=True,
+            )
+            if False  # replaced below with dynamic detection
+            else None,
+        )
+
+        # Dynamically figure out a label field for Bakken tooltips
+        import json
+
+        bakken_data = json.loads(bakken_geojson_str)
+        bakken_props = []
+        if bakken_data.get("features"):
+            bakken_props = list(bakken_data["features"][0]["properties"].keys())
+
+        # Pick the best name-like field
+        name_field = None
+        for candidate in ["UNIT_NAME", "UnitName", "Name", "NAME", "Unit_Name"]:
+            if candidate in bakken_props:
+                name_field = candidate
+                break
+
+        tooltip_fields = [name_field] if name_field else []
+        tooltip_aliases = ["Unit Name"] if name_field else []
+
+        bakken_layer = folium.GeoJson(
+            data=bakken_geojson_str,
+            name="Bakken Units",
+            style_function=lambda _: {
+                "fillColor": "transparent",
+                "color": "#e6550d",
+                "weight": 2.0,
+                "fillOpacity": 0.0,
+                "dashArray": "5 3",
+            },
+            tooltip=(
+                folium.GeoJsonTooltip(
+                    fields=tooltip_fields,
+                    aliases=tooltip_aliases,
+                    localize=True,
+                    sticky=False,
+                    labels=True,
+                )
+                if tooltip_fields
+                else None
+            ),
+        )
+        bakken_layer.add_to(m)
+
+    # Layer toggle control (top-right)
+    LayerControl(collapsed=False).add_to(m)
+
     return m
 
 
 # ------------------------
-# Input Validation + UI Controls
+# Run
 # ------------------------
-validate_inputs(EXCEL_FILE, SHP_FILE)
+geojson_str, center = make_joined_geojson(EXCEL_FILE, SHP_FILE)
 
-with st.sidebar:
-    st.header("Map Controls")
+bakken_geojson_str = None
+if BAKKEN_AVAILABLE:
+    bakken_geojson_str = load_bakken_geojson(BAKKEN_SHP_FILE)
 
-    decimals = st.slider("VRR tooltip decimals", min_value=0, max_value=4, value=3, step=1)
-    show_metrics = st.checkbox("Show summary metrics", value=True)
+m = build_folium_map(geojson_str, center, bakken_geojson_str)
 
-    st.divider()
-    st.markdown("**Tip:** Hover polygons to inspect VRR by `Section`.")
+st.subheader("VRR Map (Shapefile polygons, smooth green colormap)")
 
-# ------------------------
-# Compute / Render
-# ------------------------
-try:
-    with st.spinner("Loading shapefile, joining VRR, and rendering map..."):
-        geojson_str, center, poly_count = make_joined_geojson(EXCEL_FILE, SHP_FILE)
-
-        # Optional: compute quick summary for exec-friendly context
-        if show_metrics:
-            df_xlsx = load_xlsx(EXCEL_FILE)
-            vrr_df = compute_vrr_by_section(df_xlsx)
-            vrr_min = float(vrr_df["vrr"].min()) if len(vrr_df) else 0.0
-            vrr_max = float(vrr_df["vrr"].max()) if len(vrr_df) else 0.0
-            vrr_mean = float(vrr_df["vrr"].mean()) if len(vrr_df) else 0.0
-            vrr_zero = int((vrr_df["vrr"] <= 0.0).sum()) if len(vrr_df) else 0
-
-        m = build_folium_map(geojson_str, center, decimals=decimals)
-
-except Exception as e:
-    logger.exception("App failed during processing.")
-    st.error(
-        "Something went wrong while generating the map. "
-        "Check that your files match the expected schema (column names + `Section` field)."
-    )
-    st.exception(e)
-    st.stop()
-
-# ------------------------
-# Executive-ready summary + Map
-# ------------------------
-st.subheader("VRR Overlay (Navigable)")
-st.markdown(
-    f"Shapefile polygons: **{poly_count:,}**. "
-    f"Base tile layer: **{TILE_LAYER}**."
-)
-
-if show_metrics:
-    st.markdown("### Snapshot")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("VRR (min)", f"{vrr_min:.3f}")
-    c2.metric("VRR (mean)", f"{vrr_mean:.3f}")
-    c3.metric("VRR (max)", f"{vrr_max:.3f}")
-    c4.metric("VRR = 0 count", f"{vrr_zero:,}")
-
-st_folium(m, use_container_width=True, height=650)
-
-st.caption(
-    "VRR is clipped to the range $[0.0, 3.0]$ for color visualization. "
-    "Values are computed per `Section` using the uploaded Excel inputs."
-)
+# returned_objects=[] prevents st_folium from pushing every click/hover
+# back to Streamlit, which was causing a full rerun on every interaction.
+st_folium(m, use_container_width=True, height=650, returned_objects=[])
