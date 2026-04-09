@@ -8,3 +8,4 @@ folium
 streamlit-folium
 openpyxl
 xlsxwriter
+streamlit-authenticator
