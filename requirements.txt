@@ -8,4 +8,3 @@ folium
 streamlit-folium
 openpyxl
 xlsxwriter
-streamlit-authenticator==0.10.0
