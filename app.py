@@ -1,5 +1,5 @@
 import os
-import xlsxwriter  # unused but kept from your original
+import xlsxwriter
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -12,60 +12,9 @@ import branca.colormap as cm
 import geopandas as gpd
 
 # ------------------------
-# 🔐 Authentication Setup
+# Streamlit Setup
 # ------------------------
-import streamlit_authenticator as stauth
-
 st.set_page_config(page_title="Bakken VRR Map", layout="wide")
-
-# ---- DEMO CREDENTIALS (CHANGE HERE if you want) ----
-DEMO_USERNAME = "admin"
-DEMO_PASSWORD = "hello"  # <-- user/pw for this script
-
-names = ["Admin User"]
-usernames = [DEMO_USERNAME]
-
-# Generate password hash at runtime (works as a template)
-hashed_passwords = [stauth.Hasher([DEMO_PASSWORD]).generate()[0]]
-
-credentials = {
-    "usernames": {
-        usernames[0]: {
-            "name": names[0],
-            "password": hashed_passwords[0],  # hashed password
-        }
-    }
-}
-
-authenticator = stauth.Authenticate(
-    credentials,
-    "vrr_map_cookie",
-    "CHANGE_ME_TO_A_LONG_RANDOM_SECRET",  # recommended: change this
-    cookie_expiry_days=1,
-)
-
-name, authentication_status, username = authenticator.login(
-    name="Login",
-    location="main",
-)
-
-# ------------------------
-# 🚫 Not logged in states
-# ------------------------
-if authentication_status is False:
-    st.error("Username/password is incorrect")
-    st.stop()
-
-if authentication_status is None:
-    st.warning("Please enter your username and password")
-    st.stop()
-
-# ------------------------
-# ✅ Logged in → run app
-# ------------------------
-authenticator.logout("Logout", "sidebar")
-st.sidebar.write(f"Welcome {name}")
-
 st.title("Bakken VRR Map")
 
 # ------------------------
@@ -111,7 +60,7 @@ else:
     BAKKEN_AVAILABLE = True
 
 # ------------------------
-# Cache functions
+# Cache: load Excel + shapefile
 # ------------------------
 @st.cache_data(show_spinner=False)
 def load_xlsx(path: str) -> pd.DataFrame:
@@ -135,7 +84,6 @@ def load_xlsx(path: str) -> pd.DataFrame:
     ]
     df[num_cols] = df[num_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
     df[num_cols] = df[num_cols] * 1000
-
     df["Section"] = df["Section"].astype(str).str.strip()
     return df
 
@@ -173,7 +121,6 @@ def compute_vrr_by_section(df_xlsx: pd.DataFrame) -> pd.DataFrame:
 
     vrr = np.where(denom > 0, (inj * 1.01) / denom, 0.0)
     vrr = np.nan_to_num(vrr, nan=0.0, posinf=0.0, neginf=0.0)
-
     vrr_disp = np.clip(vrr, VRR_MIN, MAX_VRR)
     agg["vrr"] = vrr_disp.round(3)
     return agg[["Section", "vrr"]]
@@ -186,18 +133,17 @@ def make_joined_geojson(excel_path: str, shp_path: str) -> tuple:
 
     if "Section" not in gdf.columns:
         raise ValueError("Shapefile missing required attribute `Section`.")
-
     gdf["Section"] = gdf["Section"].astype(str).str.strip()
 
     vrr_df = compute_vrr_by_section(df_xlsx)
     gdf2 = gdf.merge(vrr_df, on="Section", how="left")
     gdf2["vrr"] = gdf2["vrr"].fillna(0.0)
 
+    # Compute centroid in projected CRS, then convert back to lat/lon
     gdf_proj = gdf2.to_crs(epsg=3857)
     centroid_proj = gdf_proj.geometry.centroid
     centroid_gdf = gpd.GeoDataFrame(geometry=centroid_proj, crs="EPSG:3857")
     centroid_gdf = centroid_gdf.to_crs(epsg=4326)
-
     center_lat = float(centroid_gdf.geometry.y.mean())
     center_lon = float(centroid_gdf.geometry.x.mean())
 
@@ -209,14 +155,23 @@ def load_bakken_geojson(path: str) -> str:
     gdf = load_shp(path)
     return gdf.to_json()
 
-# ------------------------
-# Map builder
-# ------------------------
-def build_folium_map(geojson_str, center, bakken_geojson_str=None):
+
+# -------------------------------------------------------
+# Build map — NOT cached (folium Maps are mutable objects
+# with closures that break Streamlit's cache).
+# The *data* feeding it is already cached above, so this
+# is cheap: it only serialises the already-prepared JSON.
+# -------------------------------------------------------
+def build_folium_map(
+    geojson_str: str,
+    center: list,
+    bakken_geojson_str=None,
+) -> folium.Map:
     m = folium.Map(location=center, zoom_start=ZOOM_START, tiles=TILE_LAYER)
 
+    # ---- Bakken Units layer ----
     if bakken_geojson_str is not None:
-        folium.GeoJson(
+        bakken_layer = folium.GeoJson(
             data=bakken_geojson_str,
             name="Bakken Units",
             style_function=lambda _: {
@@ -225,38 +180,51 @@ def build_folium_map(geojson_str, center, bakken_geojson_str=None):
                 "weight": 3.0,
                 "fillOpacity": 0.0,
             },
-        ).add_to(m)
+        )
+        bakken_layer.add_to(m)
 
+    # ---- VRR layer ----
     vrr_colormap = cm.LinearColormap(GREEN_STOPS, vmin=VRR_MIN, vmax=MAX_VRR)
+    vrr_colormap.caption = "VRR (green gradient)"
 
-    def style_fn(feature):
+    def style_fn(feature, _cmap=vrr_colormap):
         v = feature["properties"].get("vrr", 0.0)
         if v is None or v == 0:
-            return {"fillOpacity": 0}
+            fill_color = "transparent"
+            fill_opacity = 0.0
+        else:
+            v = float(v)
+            fill_color = _cmap(v)
+            fill_opacity = 0.65
         return {
-            "fillColor": vrr_colormap(v),
+            "fillColor": fill_color,
             "color": "rgba(0,0,0,0.25)",
             "weight": 0.7,
-            "fillOpacity": 0.65,
+            "fillOpacity": fill_opacity,
         }
 
-    folium.GeoJson(
+    vrr_layer = folium.GeoJson(
         data=geojson_str,
         name="VRR Sections",
         style_function=style_fn,
         tooltip=folium.GeoJsonTooltip(
             fields=["Section", "vrr"],
             aliases=["Section", "VRR"],
+            localize=True,
+            sticky=False,
+            labels=True,
         ),
-    ).add_to(m)
-
+    )
+    vrr_layer.add_to(m)
     vrr_colormap.add_to(m)
+
     LayerControl(collapsed=False).add_to(m)
 
     return m
 
+
 # ------------------------
-# Run app
+# Run
 # ------------------------
 geojson_str, center = make_joined_geojson(EXCEL_FILE, SHP_FILE)
 
@@ -269,22 +237,24 @@ m = build_folium_map(geojson_str, center, bakken_geojson_str)
 st_folium(m, use_container_width=True, height=650, returned_objects=[])
 
 # ------------------------
-# Table
+# Display VRR table
 # ------------------------
 st.subheader("VRR by Section")
 
+# Load the processed VRR data
 df_xlsx = load_xlsx(EXCEL_FILE)
 vrr_df = compute_vrr_by_section(df_xlsx)
 
+# Display table in Streamlit
 st.dataframe(vrr_df.style.format({"vrr": "{:.3f}"}), use_container_width=True)
 
 # ------------------------
-# Download
+# Download original VRR Excel file
 # ------------------------
 with open(EXCEL_FILE, "rb") as f:
     st.download_button(
         label="Download Source VRR Excel File",
         data=f,
         file_name=EXCEL_FILE,
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
